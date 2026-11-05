@@ -1,0 +1,6 @@
+artifact slate []
+
+deps [
+    steel/sys/sys.sinc;
+]
+

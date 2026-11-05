@@ -1,0 +1,290 @@
+fn slate_engine_init!(state_ptr~) [
+    slate_zero_64b!(state_ptr~);
+    slate_zero_64b!(state_ptr~ + STATE_HEAD_MAP);
+    slate_zero_64b!(state_ptr~ + STATE_STAGE_MAP);
+    slate_zero_64b!(state_ptr~ + STATE_SHADOW_MAP);
+    state_ptr~@[STATE_MAGIC] = SLATE_MAGIC;
+    state_ptr~@[STATE_HEAD_ID] = SLATE_SENTINEL;
+    state_ptr@[STATE_MERGE_PARENT] = SLATE_SENTINEL;
+    ret 0;
+]
+
+fn slate_engine_track!(state_ptr~, arena_ptr~, live_ptr~, block_count) [
+    if ((live_ptr~@[TRG_MAGIC_OFFSET * 1] & 255) != TRG_MAGIC_BYTE) [
+        ret 1;
+    ]
+    if (block_count < 1) [
+        ret 1;
+    ]
+    if (block_count > SLATE_MAX_BLOCKS) [
+        ret 1;
+    ]
+    arena_blks = state_ptr~@[STATE_ARENA_BLOCKS];
+    if (!(arena_blks < 65535)) [
+        ret 1;
+    ]
+    head_id = state_ptr~@[STATE_HEAD_ID];
+    staged_mask = 0;
+    state_ptr~@[STATE_TRACKED_COUNT] = block_count~;
+    stage_map = state_ptr~ + STATE_STAGE_MAP;
+    head_map = state_ptr~ + STATE_HEAD_MAP;
+    if (head_id~ != SLATE_SENTINEL) [
+        slate_copy_64b!(head_map~, stage_map~);
+    ]
+    loop (i:32 = 0 .. block_count) [
+        live_blk = live_ptr~ + (i << SLATE_BLOCK_SHIFT);
+        need_copy = 1;
+        if (head_id~ != SLATE_SENTINEL) [
+            h_id = slate_map_get(head_map~, i);
+            h_blk = arena_ptr~ + (h_id << SLATE_BLOCK_SHIFT);
+            diff = slate_diff_64b(live_blk~, h_blk);
+            need_copy = diff != 0;
+        ]
+        if (need_copy != 0) [
+            dst_blk = arena_ptr~ + (arena_blks << SLATE_BLOCK_SHIFT);
+            slate_copy_64b!(live_blk, dst_blk);
+            slate_map_set!(stage_map~, i, arena_blks);
+            staged_mask = staged_mask | (1 << i);
+            arena_blks = arena_blks + 1;
+        ]
+    ]
+    state_ptr~@[STATE_STAGED_MASK] = staged_mask;
+    state_ptr@[STATE_ARENA_BLOCKS] = arena_blks;
+    ret 0;
+]
+
+fn slate_engine_untrack!(state_ptr~) [
+    if (state_ptr~@[STATE_STAGED_MASK] == 0) [
+        ret 1;
+    ]
+    slate_copy_64b!(state_ptr~ + STATE_HEAD_MAP, state_ptr~ + STATE_STAGE_MAP);
+    state_ptr~@[STATE_STAGED_MASK] = 0;
+    state_ptr@[STATE_MERGE_PARENT] = SLATE_SENTINEL;
+    ret 0;
+]
+
+fn slate_engine_undo!(state_ptr~, arena_ptr~, live_ptr~) [
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 1;
+    ]
+    if (state_ptr~@[STATE_HEAD_ID] == SLATE_SENTINEL) [
+        ret 1;
+    ]
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    slate_stream_masked!(arena_ptr~, state_ptr~ + STATE_HEAD_MAP, live_ptr~, -1, tracked);
+    ret 0;
+]
+
+fn slate_engine_update!(state_ptr~, manifest_ptr~) [
+    staged_mask = state_ptr~@[STATE_STAGED_MASK];
+    if (staged_mask~ == 0) [
+        ret 1;
+    ]
+    comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+    head_id = state_ptr~@[STATE_HEAD_ID];
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    commit_ptr = manifest_ptr~ + (comm_cnt~ << SLATE_COMMIT_SHIFT);
+    commit_ptr~@[COMMIT_ID] = comm_cnt~;
+    commit_ptr~@[COMMIT_PARENT_A] = head_id;
+    commit_ptr~@[COMMIT_PARENT_B] = state_ptr~@[STATE_MERGE_PARENT];
+    commit_ptr~@[COMMIT_TRACKED_COUNT] = tracked;
+    commit_ptr~@[COMMIT_TAG64] = 0;
+    commit_ptr~@[COMMIT_CHANGED_MASK] = staged_mask;
+    slate_copy_64b!(state_ptr~ + STATE_STAGE_MAP, commit_ptr + COMMIT_MAP);
+    slate_copy_64b!(state_ptr~ + STATE_STAGE_MAP, state_ptr~ + STATE_HEAD_MAP);
+    new_head = comm_cnt;
+    state_ptr~@[STATE_HEAD_ID] = new_head;
+    state_ptr~@[STATE_COMMITS_COUNT] = new_head + 1;
+    state_ptr~@[STATE_STAGED_MASK] = 0;
+    state_ptr@[STATE_MERGE_PARENT] = SLATE_SENTINEL;
+    ret 0;
+]
+
+fn slate_engine_tag!(state_ptr~, manifest_ptr~, tag64) [
+    head_id = state_ptr@[STATE_HEAD_ID];
+    if (head_id == SLATE_SENTINEL) [
+        ret 1;
+    ]
+    commit_ptr = manifest_ptr + (head_id << SLATE_COMMIT_SHIFT);
+    commit_ptr@[COMMIT_TAG64] = tag64;
+    ret 0;
+]
+
+fn slate_engine_forget!(state_ptr~, manifest_ptr~) [
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 1;
+    ]
+    head_id = state_ptr~@[STATE_HEAD_ID];
+    if (head_id~ == SLATE_SENTINEL) [
+        ret 1;
+    ]
+    commit_ptr = manifest_ptr~ + (head_id << SLATE_COMMIT_SHIFT);
+    if (slate_is_tag_pinned(commit_ptr~@[COMMIT_TAG64]) != 0) [
+        ret 1;
+    ]
+    parent_a = commit_ptr~@[COMMIT_PARENT_A];
+    state_ptr~@[STATE_HEAD_ID] = parent_a~;
+    if (parent_a != SLATE_SENTINEL) [
+        p_ptr = manifest_ptr + (parent_a << SLATE_COMMIT_SHIFT);
+        slate_copy_64b!(p_ptr + COMMIT_MAP, state_ptr~ + STATE_HEAD_MAP);
+    ] else [
+        slate_zero_64b!(state_ptr~ + STATE_HEAD_MAP);
+    ]
+    state_ptr@[STATE_STAGED_MASK] = commit_ptr@[COMMIT_CHANGED_MASK];
+    ret 0;
+]
+
+fn slate_engine_jump!(state_ptr~, manifest_ptr~, arena_ptr~, live_ptr~, target_id) [
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 1;
+    ]
+    comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+    if (!(target_id~ < comm_cnt)) [
+        ret 1;
+    ]
+    t_ptr = manifest_ptr~ + (target_id~ << SLATE_COMMIT_SHIFT);
+    slate_copy_64b!(t_ptr + COMMIT_MAP, state_ptr~ + STATE_HEAD_MAP);
+    slate_copy_64b!(t_ptr + COMMIT_MAP, state_ptr~ + STATE_STAGE_MAP);
+    tracked = t_ptr~@[COMMIT_TRACKED_COUNT];
+    state_ptr~@[STATE_TRACKED_COUNT] = tracked~;
+    slate_stream_masked!(arena_ptr~, state_ptr~ + STATE_HEAD_MAP, live_ptr~, -1, tracked);
+    state_ptr~@[STATE_HEAD_ID] = target_id;
+    state_ptr@[STATE_STAGED_MASK] = 0;
+    ret 0;
+]
+
+fn slate_engine_merge!(state_ptr~, manifest_ptr~, arena_ptr~, live_ptr~, target_id) [
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 1;
+    ]
+    comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+    if (!(target_id~ < comm_cnt)) [
+        ret 1;
+    ]
+    head_id = state_ptr~@[STATE_HEAD_ID];
+    if (head_id~ == SLATE_SENTINEL) [
+        ret 1;
+    ]
+    if (target_id~ == head_id~) [
+        ret 0;
+    ]
+    h_ptr = manifest_ptr~ + (head_id << SLATE_COMMIT_SHIFT);
+    t_ptr = manifest_ptr~ + (target_id << SLATE_COMMIT_SHIFT);
+    h_mask = h_ptr~@[COMMIT_CHANGED_MASK];
+    t_mask = t_ptr~@[COMMIT_CHANGED_MASK];
+    t_map = t_ptr + COMMIT_MAP;
+    head_map = state_ptr~ + STATE_HEAD_MAP;
+    stage_map = state_ptr~ + STATE_STAGE_MAP;
+    sh_map = state_ptr~ + STATE_SHADOW_MAP;
+    slate_copy_64b!(head_map~, stage_map~);
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    staged_mask = 0;
+    has_conflict = 0;
+    loop (i:32 = 0 .. tracked) [
+        h_id = slate_map_get(head_map~, i);
+        t_id = slate_map_get(t_map~, i);
+        if (h_id != t_id) [
+            h_blk = arena_ptr~ + (h_id << SLATE_BLOCK_SHIFT);
+            t_blk = arena_ptr~ + (t_id << SLATE_BLOCK_SHIFT);
+            diff = slate_diff_64b(h_blk~, t_blk~);
+            eq_ab = diff == 0;
+            d_a = (h_mask >> i) & 1;
+            d_b = (t_mask >> i) & 1;
+            is_conf = slate_merge_conflict(d_a, d_b, eq_ab);
+            if (is_conf != 0) [
+                slate_map_set!(sh_map~, i, t_id);
+                state_ptr~@[STATE_SHADOW_MASK] = state_ptr~@[STATE_SHADOW_MASK] | (1 << i);
+                has_conflict = 1;
+            ] else [
+                if (d_b != 0) [
+                    slate_map_set!(stage_map~, i, t_id);
+                    staged_mask = staged_mask | (1 << i);
+                ]
+            ]
+        ]
+    ]
+    state_ptr~@[STATE_STAGED_MASK] = staged_mask;
+    if (staged_mask != 0) [
+        state_ptr~@[STATE_MERGE_PARENT] = target_id;
+    ]
+    if (has_conflict != 0) [
+        state_ptr~@[STATE_MERGE_PARENT] = target_id;
+    ]
+    if (has_conflict != 0) [
+        ret 2;
+    ]
+    ret 0;
+]
+
+fn slate_engine_shadow!(state_ptr~, arena_ptr~, block_idx, shadow_block_ptr~) [
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    if (block_idx < 0) [
+        ret 1;
+    ]
+    if (!(block_idx < tracked)) [
+        ret 1;
+    ]
+    arena_blks = state_ptr~@[STATE_ARENA_BLOCKS];
+    if (!(arena_blks < 65535)) [
+        ret 1;
+    ]
+    dst_blk = arena_ptr~ + (arena_blks~ << SLATE_BLOCK_SHIFT);
+    slate_copy_64b!(shadow_block_ptr, dst_blk);
+    sh_map = state_ptr~ + STATE_SHADOW_MAP;
+    slate_map_set!(sh_map~, block_idx, arena_blks);
+    state_ptr~@[STATE_SHADOW_MASK] = state_ptr~@[STATE_SHADOW_MASK] | (1 << block_idx);
+    state_ptr@[STATE_ARENA_BLOCKS] = arena_blks + 1;
+    ret 0;
+]
+
+fn slate_engine_accept!(state_ptr~, arena_ptr~, live_ptr~) [
+    sh_mask = state_ptr~@[STATE_SHADOW_MASK];
+    if (sh_mask~ == 0) [
+        ret 1;
+    ]
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    sh_map = state_ptr~ + STATE_SHADOW_MAP;
+    stage_map = state_ptr~ + STATE_STAGE_MAP;
+    slate_stream_masked!(arena_ptr~, sh_map~, live_ptr~, sh_mask, tracked);
+    loop (i:32 = 0 .. tracked) [
+        if (((sh_mask >> i) & 1) != 0) [
+            b_id = slate_map_get(sh_map~, i);
+            slate_map_set!(stage_map~, i, b_id);
+        ]
+    ]
+    state_ptr~@[STATE_STAGED_MASK] = state_ptr~@[STATE_STAGED_MASK] | sh_mask;
+    state_ptr@[STATE_SHADOW_MASK] = 0;
+    ret 0;
+]
+
+fn slate_engine_reject!(state_ptr~) [
+    if (state_ptr~@[STATE_SHADOW_MASK] == 0) [
+        ret 1;
+    ]
+    state_ptr~@[STATE_SHADOW_MASK] = 0;
+    state_ptr@[STATE_MERGE_PARENT] = SLATE_SENTINEL;
+    ret 0;
+]
+
+fn slate_engine_diff!(state_ptr~, arena_ptr~, live_ptr~, out_buf~) [
+    head_id = state_ptr~@[STATE_HEAD_ID];
+    tracked = state_ptr~@[STATE_TRACKED_COUNT];
+    head_map = state_ptr~ + STATE_HEAD_MAP;
+    changed_blks = 0;
+    changed_tokens = 0;
+    loop (i:32 = 0 .. tracked) [
+        d_mask = 0;
+        if (head_id~ != SLATE_SENTINEL) [
+            live_blk = live_ptr~ + (i << SLATE_BLOCK_SHIFT);
+            h_id = slate_map_get(head_map~, i);
+            h_blk = arena_ptr~ + (h_id << SLATE_BLOCK_SHIFT);
+            d_mask = slate_diff_64b(live_blk~, h_blk);
+            if (d_mask != 0) [
+                changed_blks = changed_blks + 1;
+                changed_tokens = changed_tokens + slate_popcount(d_mask);
+            ]
+        ]
+        out_buf~@[i] = d_mask;
+    ]
+    ret (changed_blks << 32) | changed_tokens;
+]

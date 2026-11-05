@@ -1,0 +1,292 @@
+fn slate_init_paths!(path_buf~) [
+    p0 = path_buf;
+    p0@[0] = 7814640791697060979;
+    p0@[1] = 6648929;
+
+    p1 = path_buf + 32;
+    p1@[0] = 8391162021251277165;
+    p1@[1] = 111550525109038;
+
+    p2 = path_buf + 64;
+    p2@[0] = 7814640774416790113;
+    p2@[1] = 6648929;
+    ret 0;
+]
+
+fn slate_write_file!(path_ptr~, buf_ptr~, byte_count) [
+    fd = sys_open_write!(path_ptr);
+    if (fd < 0) [
+        sys_exit!(1);
+    ]
+    sys_write!(fd, buf_ptr, byte_count);
+    sys_close!(fd);
+    ret 0;
+]
+
+fn slate_write_trg!(path_ptr~, live_ptr~) [
+    exact_len = (live_ptr~@[0] & 4294967295) + 64;
+    slate_write_file!(path_ptr, live_ptr, exact_len);
+    ret 0;
+]
+
+fn slate_read_file!(path_ptr~, buf_ptr~, max_len) [
+    fd = sys_open_read!(path_ptr);
+    if (fd < 0) [
+        sys_exit!(1);
+    ]
+    n = sys_read!(fd, buf_ptr, max_len);
+    sys_close!(fd);
+    ret n;
+]
+
+fn slate_parse_u64!(str_ptr~) [
+    val = 0;
+    i = 0;
+    b = str_ptr~@[0 * 1] & 255;
+    if (b == 0) [
+        sys_exit!(1);
+    ]
+    loop (step:16 = 0 .. 16) [
+        b = str_ptr~@[i * 1] & 255;
+        if (b != 0) [
+            if (b < 48) [
+                sys_exit!(1);
+            ]
+            if (b > 57) [
+                sys_exit!(1);
+            ]
+            val = (val * 10) + (b - 48);
+            i = i + 1;
+        ]
+    ]
+    ret val;
+]
+
+fn main!(argc, argv_ptr) [
+    if (argc < 2) [
+        sys_exit!(1);
+    ]
+    argv = get_argv!();
+    cmd = argv@[1];
+    c0 = cmd@[0 * 1];
+    c1 = cmd@[1 * 1];
+    c2 = cmd@[2 * 1];
+
+    mem = sys_mmap!(8388608);
+    path_buf = mem;
+    state_ptr = mem + 256;
+    out_buf = mem + 512;
+    live_ptr = mem + 1024;
+    manifest_ptr = mem + 65536;
+    arena_ptr = mem + 4194304;
+
+    slate_init_paths!(path_buf~);
+
+    if ((c0 == 105) & (c1 == 110)) [
+        slate_engine_init!(state_ptr~);
+        slate_write_file!(path_buf + 32, state_ptr, 0);
+        slate_write_file!(path_buf + 64, state_ptr, 0);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    rb0 = slate_read_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+    if (rb0 != SLATE_STATE_SIZE) [
+        sys_exit!(1);
+    ]
+
+    fd1 = sys_open_read!(path_buf + 32);
+    if (!(fd1 < 0)) [
+        sys_read!(fd1, manifest_ptr, 4000000);
+        sys_close!(fd1);
+    ]
+
+    fd2 = sys_open_read!(path_buf + 64);
+    if (!(fd2 < 0)) [
+        sys_read!(fd2, arena_ptr, 4194304);
+        sys_close!(fd2);
+    ]
+
+    if ((c0 == 116) & (c1 == 114)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        file_path = argv@[2];
+        file_len = slate_read_file!(file_path, live_ptr, 16384);
+        if (file_len < 64) [
+            sys_exit!(1);
+        ]
+        block_count = (file_len + 63) >> SLATE_BLOCK_SHIFT;
+        res = slate_engine_track!(state_ptr~, arena_ptr~, live_ptr~, block_count);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        arena_blks = state_ptr~@[STATE_ARENA_BLOCKS];
+        slate_write_file!(path_buf + 64, arena_ptr, arena_blks << SLATE_BLOCK_SHIFT);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 117) & (c1 == 110) & (c2 == 116)) [
+        res = slate_engine_untrack!(state_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 117) & (c1 == 110) & (c2 == 100)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        file_path = argv@[2];
+        res = slate_engine_undo!(state_ptr~, arena_ptr~, live_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_trg!(file_path, live_ptr);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 117) & (c1 == 112)) [
+        res = slate_engine_update!(state_ptr~, manifest_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+        slate_write_file!(path_buf + 32, manifest_ptr, comm_cnt << SLATE_COMMIT_SHIFT);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 102) & (c1 == 111)) [
+        res = slate_engine_forget!(state_ptr~, manifest_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 116) & (c1 == 97)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        tag_arg = argv@[2];
+        t0 = tag_arg@[0 * 1] & 255;
+        t1 = tag_arg@[1 * 1] & 255;
+        t2 = tag_arg@[2 * 1] & 255;
+        t3 = tag_arg@[3 * 1] & 255;
+        tag_quad = t0 | (t1 << 8) | (t2 << 16) | (t3 << 24);
+        tag64 = (t0 << 56) | (1 << 48) | (1 << 32) | tag_quad;
+        res = slate_engine_tag!(state_ptr~, manifest_ptr~, tag64);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+        slate_write_file!(path_buf + 32, manifest_ptr, comm_cnt << SLATE_COMMIT_SHIFT);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 106) & (c1 == 117)) [
+        if (argc < 4) [
+            sys_exit!(1);
+        ]
+        target_id = slate_parse_u64!(argv@[2]);
+        file_path = argv@[3];
+        res = slate_engine_jump!(state_ptr~, manifest_ptr~, arena_ptr~, live_ptr~, target_id);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_trg!(file_path, live_ptr);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 109) & (c1 == 101)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        target_id = slate_parse_u64!(argv@[2]);
+        res = slate_engine_merge!(state_ptr~, manifest_ptr~, arena_ptr~, live_ptr~, target_id);
+        if (res != 1) [
+            slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        ]
+        sys_exit!(res);
+    ]
+
+    if ((c0 == 115) & (c1 == 116)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        file_path = argv@[2];
+        file_len = slate_read_file!(file_path, live_ptr, 16384);
+        out_buf@[0] = slate_engine_diff!(state_ptr~, arena_ptr~, live_ptr~, out_buf~);
+        sys_write!(1, out_buf, 8);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 100) & (c1 == 105)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        file_path = argv@[2];
+        file_len = slate_read_file!(file_path, live_ptr, 16384);
+        slate_engine_diff!(state_ptr~, arena_ptr~, live_ptr~, out_buf~);
+        tracked = state_ptr~@[STATE_TRACKED_COUNT];
+        sys_write!(1, out_buf, tracked << 3);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 104) & (c1 == 105)) [
+        comm_cnt = state_ptr~@[STATE_COMMITS_COUNT];
+        if (comm_cnt > 0) [
+            sys_write!(1, manifest_ptr, comm_cnt << SLATE_COMMIT_SHIFT);
+        ]
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 115) & (c1 == 104)) [
+        if (argc < 4) [
+            sys_exit!(1);
+        ]
+        blk_idx = slate_parse_u64!(argv@[2]);
+        patch_path = argv@[3];
+        slate_read_file!(patch_path, live_ptr + 8192, 64);
+        res = slate_engine_shadow!(state_ptr~, arena_ptr~, blk_idx, live_ptr + 8192);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        arena_blks = state_ptr~@[STATE_ARENA_BLOCKS];
+        slate_write_file!(path_buf + 64, arena_ptr, arena_blks << SLATE_BLOCK_SHIFT);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 97) & (c1 == 99)) [
+        if (argc < 3) [
+            sys_exit!(1);
+        ]
+        file_path = argv@[2];
+        file_len = slate_read_file!(file_path, live_ptr, 16384);
+        res = slate_engine_accept!(state_ptr~, arena_ptr~, live_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_trg!(file_path, live_ptr);
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    if ((c0 == 114) & (c1 == 101)) [
+        res = slate_engine_reject!(state_ptr~);
+        if (res != 0) [
+            sys_exit!(res);
+        ]
+        slate_write_file!(path_buf, state_ptr, SLATE_STATE_SIZE);
+        sys_exit!(0);
+    ]
+
+    sys_exit!(1);
+]

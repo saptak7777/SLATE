@@ -1,0 +1,10 @@
+fn slate_merge_conflict(diff_a, diff_b, eq_ab) [
+    both_changed = diff_a & diff_b;
+    not_eq = -1 ^ eq_ab;
+    ret both_changed & not_eq;
+]
+
+fn slate_is_tag_pinned(tag64) [
+    tag_class = (tag64 >> 56) & 255;
+    ret tag_class == TAG_PINNED;
+]

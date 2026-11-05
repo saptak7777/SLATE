@@ -1,0 +1,119 @@
+fn main!() [
+    // Unit verification of pure primitives (zero memory pointers)
+    if (slate_popcount(0) != 0) [
+        ret 101;
+    ]
+    if (slate_popcount(1) != 1) [
+        ret 102;
+    ]
+    if (slate_popcount(6148914691236517205) != 32) [
+        ret 103;
+    ]
+    if (slate_merge_conflict(1, 1, 0) != 1) [
+        ret 104;
+    ]
+    if (slate_merge_conflict(0, 1, 0) != 0) [
+        ret 105;
+    ]
+    if (slate_merge_conflict(1, 1, 1) != 0) [
+        ret 106;
+    ]
+
+    mem = sys_mmap!(65536);
+    state_ptr = mem;
+    manifest_ptr = mem + 1024;
+    arena_ptr = mem + 4096;
+    live_ptr = mem + 16384;
+    shadow_buf = mem + 32768;
+
+    res_init = slate_engine_init!(state_ptr~);
+    if (res_init != 0) [
+        ret 1;
+    ]
+    magic = state_ptr~@[STATE_MAGIC];
+    head = state_ptr~@[STATE_HEAD_ID];
+    if (magic != SLATE_MAGIC) [
+        ret 2;
+    ]
+    if (head != SLATE_SENTINEL) [
+        ret 3;
+    ]
+
+    live_ptr~@[0 * 1] = 64;
+    live_ptr~@[TRG_MAGIC_OFFSET * 1] = TRG_MAGIC_BYTE;
+    live_ptr~@[64 * 1] = 100;
+    live_ptr~@[65 * 1] = 200;
+
+    res_track = slate_engine_track!(state_ptr~, arena_ptr~, live_ptr~, 2);
+    if (res_track != 0) [
+        ret 4;
+    ]
+    if (state_ptr~@[STATE_STAGED_MASK] == 0) [
+        ret 5;
+    ]
+
+    res_up = slate_engine_update!(state_ptr~, manifest_ptr~);
+    if (res_up != 0) [
+        ret 6;
+    ]
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 7;
+    ]
+    new_head = state_ptr~@[STATE_HEAD_ID];
+    if (new_head != 0) [
+        ret 8;
+    ]
+
+    live_ptr~@[64 * 1] = 105;
+    res_track2 = slate_engine_track!(state_ptr~, arena_ptr~, live_ptr~, 2);
+    if (res_track2 != 0) [
+        ret 9;
+    ]
+    if (state_ptr~@[STATE_STAGED_MASK] == 0) [
+        ret 10;
+    ]
+
+    err_undo = slate_engine_undo!(state_ptr~, arena_ptr~, live_ptr~);
+    if (err_undo == 0) [
+        ret 11;
+    ]
+
+    res_untrack = slate_engine_untrack!(state_ptr~);
+    if (res_untrack != 0) [
+        ret 12;
+    ]
+    if (state_ptr~@[STATE_STAGED_MASK] != 0) [
+        ret 13;
+    ]
+
+    res_undo = slate_engine_undo!(state_ptr~, arena_ptr~, live_ptr~);
+    if (res_undo != 0) [
+        ret 14;
+    ]
+    if (live_ptr~@[64 * 1] != 100) [
+        ret 15;
+    ]
+
+    shadow_buf~@[0 * 1] = 111;
+    shadow_buf~@[1 * 1] = 222;
+    res_sh = slate_engine_shadow!(state_ptr~, arena_ptr~, 1, shadow_buf);
+    if (res_sh != 0) [
+        ret 16;
+    ]
+    if (state_ptr~@[STATE_SHADOW_MASK] != 2) [
+        ret 17;
+    ]
+
+    res_acc = slate_engine_accept!(state_ptr~, arena_ptr, live_ptr~);
+    if (res_acc != 0) [
+        ret 18;
+    ]
+    if (state_ptr~@[STATE_SHADOW_MASK] != 0) [
+        ret 19;
+    ]
+    if (live_ptr@[64 * 1] != 111) [
+        ret 20;
+    ]
+
+    ret 42;
+]

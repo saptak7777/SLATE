@@ -1,0 +1,50 @@
+fn slate_copy_64b!(src_ptr~, dst_ptr~) [
+    loop (w:8 = 0 .. 8) [
+        dst_ptr~@[w] = src_ptr~@[w];
+    ]
+    ret 0;
+]
+
+fn slate_zero_64b!(dst_ptr~) [
+    loop (w:8 = 0 .. 8) [
+        dst_ptr~@[w] = 0;
+    ]
+    ret 0;
+]
+
+fn slate_map_get(map_ptr~, idx) [
+    lo = map_ptr~@[idx * 1] & 255;
+    hi_idx = idx + 32;
+    hi = map_ptr~@[hi_idx * 1] & 255;
+    ret lo | (hi << 8);
+]
+
+fn slate_map_set!(map_ptr~, idx, blk_id) [
+    map_ptr~@[idx * 1] = blk_id & 255;
+    hi_idx = idx + 32;
+    map_ptr~@[hi_idx * 1] = (blk_id >> 8) & 255;
+    ret 0;
+]
+
+fn slate_diff_64b(ptr_a~, ptr_b~) [
+    diff_mask = 0;
+    loop (b:64 = 0 .. 64) [
+        ba = ptr_a~@[b * 1] & 255;
+        bb = ptr_b~@[b * 1] & 255;
+        neq = ba != bb;
+        diff_mask = diff_mask | (neq << b);
+    ]
+    ret diff_mask;
+]
+
+fn slate_stream_masked!(arena_ptr~, map_ptr~, dst_ptr~, mask, count) [
+    loop (i:32 = 0 .. count) [
+        if (((mask >> i) & 1) != 0) [
+            blk_id = slate_map_get(map_ptr~, i);
+            src_blk = arena_ptr~ + (blk_id << SLATE_BLOCK_SHIFT);
+            dst_blk = dst_ptr~ + (i << SLATE_BLOCK_SHIFT);
+            slate_copy_64b!(src_blk, dst_blk);
+        ]
+    ]
+    ret 0;
+]

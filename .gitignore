@@ -1,0 +1,23 @@
+# Build artifacts & temporary scratch files
+scratch/
+docs/
+*.safe
+*.o
+*.elf
+__pycache__/
+*.pyc
+
+# Exclude generated project executable
+bin/slate
+
+# Keep bootstrap toolchain binaries
+!bin/
+!bin/sinc.elf
+!bin/staff
+!bin/packager_bin
+!bin/packager_o
+!bin/slim.elf
+
+# Editor & OS artifacts
+.vscode/
+.DS_Store
